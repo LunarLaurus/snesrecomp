@@ -48,13 +48,15 @@ struct Snes {
   // its master clock; HVBJOY must not add the legacy polling advance too.
   bool cpuReadClocked;
 
-  // Host timing anchor; excluded from savestates and reconciled after load.
-  uint64_t beamMasterLast;
-
   // Console region (snes_region.h), chosen when the ROM loads. Machine
   // configuration rather than guest state: it stays outside the savestate
-  // blob and survives snes_reset. false (a zeroed struct) is NTSC.
+  // blob and survives snes_reset. false (a zeroed struct) is NTSC. It sits in
+  // the padding before beamMasterLast so no later offset moves: the blob's
+  // length includes the struct's tail padding.
   bool palTiming;
+
+  // Host timing anchor; excluded from savestates and reconciled after load.
+  uint64_t beamMasterLast;
 
   // --- saveload blob starts here (hPos .. divideResult) ---
   uint16_t hPos;
