@@ -19,6 +19,7 @@ typedef void (*SnesWramWriteLogHook)(uint32_t ram_off, uint8_t value,
 #include "ppu.h"
 #include "cart.h"
 #include "saveload.h"
+#include "snes_region.h"
 
 struct Snes {
   Cpu* cpu;
@@ -49,6 +50,11 @@ struct Snes {
 
   // Host timing anchor; excluded from savestates and reconciled after load.
   uint64_t beamMasterLast;
+
+  // Console region (snes_region.h), chosen when the ROM loads. Machine
+  // configuration rather than guest state: it stays outside the savestate
+  // blob and survives snes_reset. false (a zeroed struct) is NTSC.
+  bool palTiming;
 
   // --- saveload blob starts here (hPos .. divideResult) ---
   uint16_t hPos;
@@ -133,6 +139,21 @@ uint16_t SwapInputBits(uint16_t x);
 // snes_other.c functions:
 
 bool snes_loadRom(Snes* snes, const uint8_t* data, int length);
+/* Region for the next snes_loadRom. kSnesRegionAuto (the default) follows the
+ * header's $FFD9 destination code, unless SNESRECOMP_REGION=ntsc|pal is set in
+ * the environment. An explicit NTSC or PAL here wins over both. */
+void snes_set_region_override(SnesRegion region);
+
+/* Field timing of the loaded machine. A NULL snes is NTSC. */
+static inline uint32_t snes_lines_per_field(const Snes *snes) {
+  return snes_region_lines_per_field(snes && snes->palTiming);
+}
+static inline uint32_t snes_master_clocks_per_field(const Snes *snes) {
+  return snes_region_master_clocks_per_field(snes && snes->palTiming);
+}
+static inline double snes_apu_cycles_per_master(const Snes *snes) {
+  return snes_region_apu_cycles_per_master(snes && snes->palTiming);
+}
 /* Savestate format version for snes_saveload layout (RTLS header). */
 void snes_saveload_set_version(uint32_t version);
 uint32_t snes_saveload_get_version(void);

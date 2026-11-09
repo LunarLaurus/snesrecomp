@@ -42,7 +42,10 @@ extern int cosim_apu_shared_clock(void);  /* common_rtl.c — SNES_COSIM_APU_SHA
 #endif
 void RtlApuLock(void);                    /* real mutex in the windowed runner (audio thread also cycles the SPC); no-op in headless/cosim */
 void RtlApuUnlock(void);
-static const double kInterpApuPerMaster = (32040.0 * 32.0) / (1364.0 * 262.0 * 60.0);
+/* SPC cycles per master clock, for the loaded machine's region. */
+static double interp_apu_per_master(void) {
+    return snes_apu_cycles_per_master(g_snes);
+}
 
 /* Batched guest-time APU advance. v1 advanced the SPC per interpreted opcode:
  * RtlApuLock + snes_catchupApu once per opcode. In the windowed build that
@@ -111,7 +114,7 @@ static void bridge_apu_flush(CpuState *cpu) {
         return;
     }
     RtlApuLock();
-    g_snes->apuCatchupCycles += (double)s_apu_pending_master * kInterpApuPerMaster;
+    g_snes->apuCatchupCycles += (double)s_apu_pending_master * interp_apu_per_master();
     g_apu_last_sync_master = cpu->master_cycles;
     snes_catchupApu(g_snes);
     /* After the relative catch-up, resync the SPC to the absolute guest clock.
@@ -1984,11 +1987,15 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                 s_vff_log = (_l && _l[0] && _l[0] != '0') ? 1 : 0;
             }
             extern int snes_frame_counter;
+            /* One field of master clocks and its last line (NTSC 261,
+             * PAL 311); vblank starts at line 225 on both. */
+            const uint32_t field = snes_master_clocks_per_field(g_snes);
+            const uint32_t last_line = snes_lines_per_field(g_snes) - 1u;
             if (s_vff_log) {
                 fprintf(stderr, "[VFF] entry f=%d pc=%06X m=%llu intra=%llu v=%u h=%u beamML=%llu apu_pend=%llu\n",
                         snes_frame_counter, (unsigned)pc_before,
                         (unsigned long long)cpu->master_cycles,
-                        (unsigned long long)(cpu->master_cycles % 357368u),
+                        (unsigned long long)(cpu->master_cycles % field),
                         g_snes->vPos, g_snes->hPos,
                         (unsigned long long)g_snes->beamMasterLast,
                         (unsigned long long)s_apu_pending_master);
@@ -2027,7 +2034,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                             if (!(g_snes->vIrqEnabled && g_snes->vTimer > v &&
                                   g_snes->vTimer <= 224u)) {
                                 const uint64_t d = 225u * 1364u -
-                                    (cpu->master_cycles % 357368u);
+                                    (cpu->master_cycles % field);
                                 if (d >= step)
                                     target = cpu->master_cycles +
                                              step * ((d + step - 1u) / step);
@@ -2035,7 +2042,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                                 const uint64_t trig =
                                     (uint64_t)g_snes->vTimer * 1364u;
                                 const uint64_t pos =
-                                    cpu->master_cycles % 357368u;
+                                    cpu->master_cycles % field;
                                 if (trig > pos) {
                                     const uint64_t d = trig - pos;
                                     const uint64_t k = (d - 1u) / step;
@@ -2043,11 +2050,11 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                                         target = cpu->master_cycles + step * k;
                                 }
                             }
-                        } else if (is_bmi && v >= 225u && v <= 261u) {
+                        } else if (is_bmi && v >= 225u && v <= last_line) {
                             if (!(g_snes->vIrqEnabled && g_snes->vTimer >= v &&
-                                  g_snes->vTimer <= 261u)) {
-                                const uint64_t d = 357368u -
-                                    (cpu->master_cycles % 357368u);
+                                  g_snes->vTimer <= last_line)) {
+                                const uint64_t d = field -
+                                    (cpu->master_cycles % field);
                                 if (d >= step)
                                     target = cpu->master_cycles +
                                              step * (d / step);
@@ -2072,12 +2079,12 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                              * advance AGAIN (double count). Flushing
                              * pre-jump anchors to pre-skip guest time
                              * (no-op re-anchor), catchup adds exactly
-                             * skip * kInterpApuPerMaster. */
+                             * skip * interp_apu_per_master(). */
                             s_apu_pending_master += skip;
                             for (int _g = 0; s_apu_pending_master && _g < 64;
                                  _g++) {
                                 const uint64_t _max_feed =
-                                    (uint64_t)(9000.0 / kInterpApuPerMaster);
+                                    (uint64_t)(9000.0 / interp_apu_per_master());
                                 uint64_t _chunk = s_apu_pending_master;
                                 if (_chunk > _max_feed) _chunk = _max_feed;
                                 uint64_t _rest = s_apu_pending_master - _chunk;
